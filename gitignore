@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Observing logs and data — these belong with your acquisitions, not here
+obs_*.txt
+*.fits
+*.fit
+*.fts
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

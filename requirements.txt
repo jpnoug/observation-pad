@@ -1,0 +1,15 @@
+# Observation Pad — dependencies
+#
+# Tkinter is NOT installable via pip: it ships with Python on Windows and
+# macOS, and needs a system package on Linux:
+#     sudo apt install python3-tk
+#
+# Everything else used by observation_pad.py (os, sys, re, math, datetime,
+# subprocess, configparser, json, urllib) is in the standard library.
+
+# observation_pad.py — FITS headers, coordinates, Moon/Sun ephemerides
+astropy>=5.0
+
+# spectro_convergence.py — loaded lazily, only when the SNR button is pressed
+numpy>=1.20
+matplotlib>=3.5
