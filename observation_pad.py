@@ -62,17 +62,17 @@ except ImportError:
     HAVE_ASTROPY = False
 
 # --- Réglages par défaut (éditables ici, et à la main dans l'en-tête) ---------
-SITE_DEFAUT = "PBO"
-SETUP_DEFAUT = "Newton 200 / AM5 / Alpy 600 / Atik 414ex / Guide 174MM"
+SITE_DEFAUT = "Your site"
+SETUP_DEFAUT = "Tube / Mount / Spectro / Camera / Guide"
 TEMP_CCD_DEFAUT = "-10"
 
-# Coordonnées du site par défaut (PBO : Mairie de Pibrac, Haute-Garonne).
-#   43°37'06.73"N  1°17'01.17"E
+# Coordonnées du site par défaut (Pic du Midi de Bigorre, Hautes-Pyrénées).
+#   42°56'11"N  0°08'34"E
 # Elles ne servent que de repli : si un FITS est disponible, ses SITELAT/SITELONG
 # font foi (utile en nomade, où le site réel diffère du site par défaut).
-SITE_LAT = 43.618536   # degrés, + Nord
-SITE_LON = 1.283658    # degrés, + Est
-SITE_ELEV = 190        # mètres (approx. ; sans effet notable sur Moon/Sol)
+SITE_LAT = 42.936389   # degrés, + Nord
+SITE_LON = 0.142778    # degrés, + Est
+SITE_ELEV = 2877       # mètres
 
 # Thème sombre/rouge pour préserver la vision nocturne
 BG = "#000000"

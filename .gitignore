@@ -17,3 +17,7 @@ obs_*.txt
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local site configuration — real coordinates, differ per machine/site.
+# Copy observer.ini.example to observer.ini and edit; never commit the copy.
+observer.ini
