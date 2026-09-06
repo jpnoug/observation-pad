@@ -43,6 +43,10 @@ Trois sources, dans cet ordre de priorité :
 2. `observer.ini`, à côté du script.
 3. Constantes en tête de `observation_pad.py`.
 
+L'en-tête FITS l'emporte parce qu'il est écrit par la monture et ne peut pas être « oublié », contrairement à `observer.ini` qui reste sur le site précédent après un déplacement.
+
+Le **nom** du site, lui, ne peut venir que d'`observer.ini` (clé `name` de la section `[observer]`) : un FITS porte des coordonnées, jamais un libellé. Si la position de l'en-tête FITS s'écarte de plus de `SITE_ECART_KM` (2 km) de celle de l'ini, la barre de statut le signale — les calculs restent justes, mais le nom écrit en tête du journal est périmé et doit être corrigé à la main.
+
 ---
 
 ## Boutons
@@ -59,6 +63,8 @@ Trois sources, dans cet ordre de priorité :
 
 **Calib** : insère une ligne avec les poses de calibration habituelles.
 
+**Alim** : tension d'entrée, courant et consommation cumulée de la Powerbox. Voir ci-dessous.
+
 **Check last fits** : lit le dernier FITS écrit et inscrit son en-tête dans le journal. `DATE-OBS` est reproduit tel quel sous son nom de mot-clé. Si l'altitude ou la masse d'air ont dû être calculées parce qu'elles manquaient dans l'en-tête, elles sont marquées `(calc)`.
 
 **Airmass** : tableau popup de la masse d'air de chaque pose Light, pour vérification rapide.
@@ -73,11 +79,12 @@ Trois sources, dans cet ordre de priorité :
 
 ## MTO : ciel et météo
 
-Insère deux lignes décrivant le ciel courant :
+Insère deux ou trois lignes décrivant le ciel courant :
 
 ```
 [21:30 TU] Moon illum. 99% h 11° Sun h -12°
 [21:30 TU] open_meteo : T 27°C / T-Td 14.8°C / gusts 21 km/h / cirrus 0%
+[21:30 TU] PPBA sonde : T 21.4°C / HR 71% / T-Td 5.2°C
 ```
 
 **Éclairement et altitude de la Lune** calculés localement avec astropy.
@@ -91,6 +98,34 @@ Insère deux lignes décrivant le ciel courant :
 **Cirrus** correspond à `cloud_cover_high`, les nuages hauts et fins, tueur silencieux de la spectrophotométrie. Ils atténuent sans avoir l'air nuageux, on les remarque rarement la nuit, et ils compliquent la courbe de réponse.
 
 La météo vient d'[Open-Meteo](https://open-meteo.com/) (pas de clé API). Au-dessus de la France, cela correspond au modèle Météo-France AROME à 1–2 km. C'est un **modèle météo**, pas une mesure sur votre site.
+
+**PPBA sonde** est la ligne complémentaire : si une Pegasus Pocket Powerbox Advance est connectée au serveur INDI local et que sa sonde température/humidité est branchée, ses valeurs sont ajoutées. Ce sont des **mesures réelles sur le setup**, pas une maille de modèle — c'est donc ce T−Td là qui décide de l'allumage des résistances chauffantes. La ligne est simplement omise si la Powerbox est absente.
+
+---
+
+## Alim : alimentation
+
+Une ligne sur l'état électrique du setup :
+
+```
+[20:04 TU] PPBA : 12.9 V / 3.24 A / 1.85 Ah / 23.4 Wh
+```
+
+Lecture locale et instantanée, via `indi_getprop` sur le serveur INDI. Aucun accès réseau, contrairement à MTO et AOD.
+
+**La tension** est celle qui arrive réellement à l'entrée du boîtier, pas celle des bornes de la batterie. Une fiche DC fatiguée ou mal enfichée chauffe sous charge, sa résistance augmente, et la chute se voit ici avant de provoquer des décrochages USB. En dessous de `PPBA_SEUIL_V` (12,2 V par défaut, constante en tête du script), la ligne est marquée `!! tension basse`.
+
+**Les Ah et Wh cumulés** depuis la mise sous tension donnent la consommation réelle de la nuit — utile pour dimensionner une batterie, et pour vérifier ce que coûte vraiment le refroidissement de la caméra par nuit chaude.
+
+**Si la Powerbox ne répond plus**, la ligne écrite est :
+
+```
+[20:04 TU] PPBA : pas de reponse -- couper le 12V 10 s et rebrancher
+```
+
+Ce n'est pas une panne du logiciel. Le microcontrôleur du boîtier peut se planter sur une alimentation instable, et rester muet alors que son hub USB continue de fonctionner sur l'alimentation du bus. Relancer INDI, le pad ou le PC n'y change rien : seule une coupure franche du 12 V le récupère. Avoir cette ligne dans le journal évite de passer une heure à soupçonner les caméras.
+
+Testé avec une Pocket Powerbox Advance (revB, driver `indi_pegasus_ppba`, 9600 bauds). Les noms de propriétés étant cherchés par motif plutôt qu'en dur, d'autres modèles de la gamme devraient fonctionner.
 
 ---
 
@@ -180,6 +215,10 @@ Three sources, in this order of priority:
 2. `observer.ini`, next to the script.
 3. Constants at the top of `observation_pad.py`.
 
+The FITS header wins because it is written by the mount and cannot be "forgotten", unlike `observer.ini` which stays on the previous site after a move.
+
+The site **name**, however, can only come from `observer.ini` (`name` key in the `[observer]` section): a FITS carries coordinates, never a label. If the FITS header position differs from the ini one by more than `SITE_ECART_KM` (2 km), the status bar says so — computations stay correct, but the name written at the top of the log is stale and must be fixed by hand.
+
 ---
 
 ## Buttons
@@ -200,6 +239,8 @@ recap of the frames acquired since the last New obs, then a separator and a fres
 
 **Calib** : inserts one line with the usual calibration exposures.
 
+**Alim** : Powerbox input voltage, current and cumulated consumption. See below.
+
 **Check last fits** : reads the most recently written FITS and logs its header. `DATE-OBS` is reproduced verbatim under its keyword name. If altitude or airmass had to be computed because the header lacked them, they are tagged `(calc)`.
 
 **Airmass** : popup table of the airmass of every Light frame, for quick sanity check.
@@ -215,11 +256,12 @@ DER_SNR and Buil SNR.
 
 ## MTO — sky and weather
 
-Inserts two lines describing the current sky:
+Inserts two or three lines describing the current sky:
 
 ```
 [21:30 TU] Moon illum. 99% h 11° Sun h -12°
 [21:30 TU] open_meteo : T 27°C / T-Td 14.8°C / gusts 21 km/h / cirrus 0%
+[21:30 TU] PPBA sonde : T 21.4°C / HR 71% / T-Td 5.2°C
 ```
 
 **Moon illumination and altitude** computed locally with astropy.
@@ -233,6 +275,34 @@ Inserts two lines describing the current sky:
 **Cirrus** is `cloud_cover_high`, high thin cloud silent killer for spectrophotometry. Attenuates without looking cloudy, you rarely notice it at night, and complicates your response curve.
 
 Weather comes from [Open-Meteo](https://open-meteo.com/) (no API key). Over France that means Météo-France AROME at 1–2 km. It is a **model on a grid cell**, not a measurement at your site.
+
+**PPBA sonde** is the extra line: if a Pegasus Pocket Powerbox Advance is connected to the local INDI server and its temperature/humidity probe is plugged in, its readings are appended. Those are **real measurements on the setup**, not a model grid cell — so this is the T−Td that actually decides whether to turn the dew heaters on. The line is simply omitted when the Powerbox is absent.
+
+---
+
+## Alim — power
+
+One line on the electrical state of the setup:
+
+```
+[20:04 TU] PPBA : 12.9 V / 3.24 A / 1.85 Ah / 23.4 Wh
+```
+
+Local, instantaneous read through `indi_getprop` on the INDI server. No network access, unlike MTO and AOD.
+
+**The voltage** is the one actually reaching the box, not the one at the battery terminals. A tired or loose DC plug heats up under load, its resistance rises, and the drop shows up here before it starts causing USB dropouts. Below `PPBA_SEUIL_V` (12.2 V by default, a constant at the top of the script) the line is flagged `!! tension basse`.
+
+**Cumulated Ah and Wh** since power-up give the real consumption of the night — useful to size a battery, and to check what camera cooling actually costs on a warm night.
+
+**When the Powerbox stops answering**, the line reads:
+
+```
+[20:04 TU] PPBA : pas de reponse -- couper le 12V 10 s et rebrancher
+```
+
+This is not a software failure. The box's microcontroller can hang on an unstable supply and stay silent while its USB hub keeps working off bus power. Restarting INDI, the pad or the PC changes nothing: only a hard 12 V power cycle brings it back. Having that line in the log saves an hour of blaming the cameras.
+
+Tested with a Pocket Powerbox Advance (revB, `indi_pegasus_ppba` driver, 9600 baud). Property names are matched by pattern rather than hard-coded, so other models of the range should work.
 
 ---
 
