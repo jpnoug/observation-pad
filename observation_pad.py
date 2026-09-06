@@ -13,7 +13,11 @@ Buttons:
   Check last fits — reads the last FITS: target, type/exp, RA/DEC, altitude,
                     airmass, CCD temperature, pier side, header time
   MTO             — Moon/Sun altitude + illumination and current Open-Meteo
-                    weather (T, T-Td, gusts, cirrus). Live and fast.
+                    weather (T, T-Td, gusts, cirrus), plus the PPBA probe
+                    reading when available. Live and fast.
+  Alim            — Powerbox input voltage, current and cumulated Ah/Wh,
+                    read from the local INDI server. Also reports when the
+                    box has stopped answering.
   AOD             — aerosol optical depth from two sources: CAMS model
                     (always available) and AERONET ground measurement from
                     the nearest photometer. The AERONET search is anchored
@@ -73,6 +77,10 @@ TEMP_CCD_DEFAUT = "-10"
 SITE_LAT = 42.936389   # degrés, + Nord
 SITE_LON = 0.142778    # degrés, + Est
 SITE_ELEV = 2877       # mètres
+
+# Au-delà de cet écart entre la position du header FITS et celle d'observer.ini,
+# le nom de site écrit en tête du journal est considéré comme périmé et signalé.
+SITE_ECART_KM = 2.0
 
 # Thème sombre/rouge pour préserver la vision nocturne
 BG = "#000000"
@@ -286,6 +294,112 @@ def fetch_weather(loc, timeout=3):
         }
     except (urllib.error.URLError, OSError, ValueError, KeyError):
         return None
+
+
+# --- Powerbox Pegasus PPBA (via le serveur INDI local) ------------------------
+
+PPBA_DEVICE = "Pegasus PPBA"
+PPBA_SEUIL_V = 12.2   # sous ce seuil : fiche DC qui chauffe, ou batterie basse
+
+
+def _ppba_props(timeout=3):
+    """Toutes les propriétés de la PPBA, en un seul appel à indi_getprop.
+
+    Renvoie {"PROPRIETE.ELEMENT": valeur_texte} ou None si le boîtier ne
+    répond pas. Lecture LOCALE (localhost), donc rapide, contrairement aux
+    requêtes réseau de MTO et AOD.
+
+    Un dict vide/None n'est pas qu'une absence de mesure : le microcontrôleur
+    de la PPBA peut être planté alors que son hub USB continue de fonctionner
+    sur l'alimentation du bus. Dans ce cas, couper le 12 V une dizaine de
+    secondes est le seul remède connu.
+    """
+    try:
+        r = subprocess.run(
+            ["indi_getprop", "-t", "2", f"{PPBA_DEVICE}.*.*"],
+            capture_output=True, text=True, timeout=timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    out = {}
+    for line in r.stdout.splitlines():
+        if "=" not in line:
+            continue
+        cle, _, val = line.partition("=")
+        cle = cle.strip()
+        if cle.startswith(PPBA_DEVICE + "."):
+            out[cle[len(PPBA_DEVICE) + 1:]] = val.strip()
+    return out or None
+
+
+def _ppba_num(props, motif, exclure=()):
+    """Première valeur numérique dont la clé contient `motif` (insensible à
+    la casse) et aucun des mots de `exclure`. Les noms de propriétés varient
+    selon la version du driver, donc on cherche par motif plutôt qu'en dur."""
+    if not props:
+        return None
+    motif = motif.lower()
+    for cle, val in props.items():
+        bas = cle.lower()
+        if motif in bas and not any(x.lower() in bas for x in exclure):
+            try:
+                return float(val)
+            except ValueError:
+                continue
+    return None
+
+
+def fetch_ppba(timeout=3):
+    """Alimentation : tension d'entrée, courant total, Ah et Wh cumulés.
+
+    Renvoie un dict, ou None si la PPBA ne répond pas.
+    """
+    props = _ppba_props(timeout=timeout)
+    if props is None:
+        return None
+    d = {
+        "voltage":    _ppba_num(props, "SENSOR_VOLTAGE"),
+        "current":    _ppba_num(props, "SENSOR_TOTAL_CURRENT"),
+        "amp_hours":  _ppba_num(props, "SENSOR_AMP_HOURS"),
+        "watt_hours": _ppba_num(props, "SENSOR_WATT_HOURS"),
+    }
+    return d if d["voltage"] is not None else None
+
+
+def _dew_point(temp, rh):
+    """Point de rosée par la formule de Magnus, si le driver ne le donne pas.
+    temp en °C, rh en %."""
+    if temp is None or rh is None or rh <= 0:
+        return None
+    a, b = 17.62, 243.12
+    g = math.log(rh / 100.0) + (a * temp) / (b + temp)
+    return (b * g) / (a - g)
+
+
+def fetch_ppba_env(timeout=3):
+    """Sonde température/humidité de la PPBA.
+
+    Contrairement à open_meteo, qui donne une maille de modèle à 1-2 km, ce
+    sont des mesures faites SUR le setup : c'est le T-Td qui compte réellement
+    pour juger de la marge avant condensation sur les optiques.
+
+    Renvoie un dict, ou None si la sonde n'est pas branchée / pas exposée.
+    """
+    props = _ppba_props(timeout=timeout)
+    if props is None:
+        return None
+    temp = _ppba_num(props, "TEMPERATURE", exclure=("CURRENT", "DEW"))
+    rh = _ppba_num(props, "HUMIDITY")
+    dew = _ppba_num(props, "DEWPOINT") or _ppba_num(props, "DEW_POINT")
+    if dew is None:
+        dew = _dew_point(temp, rh)
+    if temp is None and rh is None:
+        return None
+    return {
+        "temperature": temp,
+        "humidity": rh,
+        "dew_point": dew,
+        "t_td": (temp - dew) if (temp is not None and dew is not None) else None,
+    }
 
 
 def fetch_aod(loc, when=None, timeout=3):
@@ -679,6 +793,7 @@ class ObservationPad:
                 ("MTO",       self.btn_mto),
                 ("AOD",       self.btn_aod),
                 ("Calib",     self.btn_calib),
+                ("Alim",      self.btn_alim),
             ]),
             # rangée 2 — contrôles et fin de session
             (row2, [
@@ -775,9 +890,15 @@ class ObservationPad:
     # -- Pre-filled header ------------------------------------------------------
     def _insert_header(self):
         d = observing_date().isoformat()
+        # observer.ini fait foi pour le NOM du site. Il faut appeler
+        # location_from_ini() d'abord : c'est elle qui renseigne
+        # INI_SITE_NAME, en effet de bord. Repli sur la constante si le
+        # fichier est absent ou sans clé "name".
+        location_from_ini()
+        site = INI_SITE_NAME or SITE_DEFAUT
         header = (
             f"Date : {d}\n"
-            f"Site : {SITE_DEFAUT}\n"
+            f"Site : {site}\n"
             f"Setup : {SETUP_DEFAUT}\n"
             f"CCD Temperature : {TEMP_CCD_DEFAUT}\n"
             f"Polar Align : \n"
@@ -812,13 +933,29 @@ class ObservationPad:
 
     def _site_location(self):
         """Position de calcul et libellé de sa source. Priorité : header du
-        dernier FITS > observer.ini > constantes en dur (PBO)."""
+        dernier FITS > observer.ini > constantes en dur (PBO).
+
+        Le header FITS l'emporte parce qu'il est écrit par la monture et ne
+        peut pas être "oublié" — contrairement à observer.ini, qui reste sur
+        le site précédent après un déplacement. En revanche le header ne
+        porte que des COORDONNÉES, jamais un nom de site : le libellé écrit
+        en tête du journal vient forcément de l'ini. Si les deux divergent
+        nettement, ce nom est donc faux, et il vaut mieux le signaler."""
         if self.acq_dir:
             self._observe()
             if self.latest_fits:
                 loc = location_from_header(read_header(self.latest_fits))
                 if loc is not None:
-                    return loc, "FITS"
+                    src = "FITS"
+                    ini = location_from_ini()
+                    if ini is not None:
+                        d = _haversine_km(loc.lat.deg, loc.lon.deg,
+                                          ini.lat.deg, ini.lon.deg)
+                        if d > SITE_ECART_KM:
+                            src += (f"  !! observer.ini "
+                                    f"({INI_SITE_NAME or 'ini'}) a {d:.0f} km "
+                                    f"— en-tete du journal a corriger")
+                    return loc, src
         loc = location_from_ini()
         if loc is not None:
             return loc, (INI_SITE_NAME or "ini")
@@ -919,6 +1056,20 @@ class ObservationPad:
                 seg.append(f"cirrus {wx['cloud_high']:.0f}%")
             if seg:
                 lines.append(f"[{tu} TU] open_meteo : " + " / ".join(seg))
+        # Sonde de la Powerbox : mesure réelle sur le setup, à comparer avec
+        # la maille de modèle d'open_meteo ci-dessus. C'est ce T-Td là qui
+        # décide de l'allumage des résistances chauffantes.
+        env = fetch_ppba_env()
+        if env is not None:
+            seg = []
+            if env["temperature"] is not None:
+                seg.append(f"T {env['temperature']:.1f}°C")
+            if env["humidity"] is not None:
+                seg.append(f"HR {env['humidity']:.0f}%")
+            if env["t_td"] is not None:
+                seg.append(f"T-Td {env['t_td']:.1f}°C")
+            if seg:
+                lines.append(f"[{tu} TU] PPBA sonde : " + " / ".join(seg))
         self._insert_line("\n".join(lines))
         if moon_alt is not None:
             self._set_status(f"MTO inserted  |  site {src}")
@@ -1011,6 +1162,36 @@ class ObservationPad:
                                 if ref_when and ae is not None else ""))
         else:
             self._set_status("No AOD available (no network?).")
+
+    def btn_alim(self):
+        """Powerbox: input voltage, current and cumulated consumption.
+
+        Local read, instantaneous. Two things are worth logging: the voltage
+        actually reaching the box (a warm or loose DC plug shows up as a drop
+        under load), and a box that has stopped answering at all — in which
+        case only a power cycle of the 12 V brings it back, restarting the
+        software will not.
+        """
+        tu = now_utc_hm()
+        pb = fetch_ppba()
+        if pb is None:
+            self._insert_line(f"[{tu} TU] PPBA : pas de reponse "
+                              f"-- couper le 12V 10 s et rebrancher")
+            self._set_status("PPBA silent — power cycle the 12 V")
+            return
+        seg = [f"{pb['voltage']:.1f} V"]
+        if pb["current"] is not None:
+            seg.append(f"{pb['current']:.2f} A")
+        if pb["amp_hours"] is not None:
+            seg.append(f"{pb['amp_hours']:.2f} Ah")
+        if pb["watt_hours"] is not None:
+            seg.append(f"{pb['watt_hours']:.1f} Wh")
+        alerte = pb["voltage"] < PPBA_SEUIL_V
+        if alerte:
+            seg.append("!! tension basse")
+        self._insert_line(f"[{tu} TU] PPBA : " + " / ".join(seg))
+        self._set_status(f"PPBA {pb['voltage']:.1f} V"
+                         + ("  |  BELOW THRESHOLD" if alerte else ""))
 
     def btn_calib(self):
         # A single line, with the usual exposure times in parentheses
